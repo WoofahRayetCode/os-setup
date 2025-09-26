@@ -3,6 +3,7 @@ import os
 import sys
 import shutil
 import re
+import platform
 from pathlib import Path
 
 try:
@@ -101,6 +102,35 @@ def dir_is_empty(path: Path) -> bool:
         return False
 
 
+def create_symlink_safe(link_path: Path, target_path: Path) -> tuple[bool, str]:
+    """
+    Safely create a symbolic link with proper Windows error handling.
+    Returns (success, message).
+    """
+    try:
+        # On Windows, we need directory symlinks for directories
+        if platform.system() == "Windows":
+            os.symlink(str(target_path), str(link_path), target_is_directory=True)
+        else:
+            os.symlink(str(target_path), str(link_path))
+        return True, f"Successfully created symlink: {link_path} -> {target_path}"
+    except OSError as e:
+        if platform.system() == "Windows" and e.winerror == 1314:
+            # Privilege error on Windows
+            return False, (
+                f"Failed to create symlink due to insufficient privileges.\n"
+                f"To fix this, either:\n"
+                f"1. Run this application as Administrator, OR\n"
+                f"2. Enable Developer Mode in Windows Settings:\n"
+                f"   Settings > Update & Security > For developers > Developer Mode\n\n"
+                f"Target: {link_path} -> {target_path}"
+            )
+        else:
+            return False, f"Failed to create symlink: {e}\nTarget: {link_path} -> {target_path}"
+    except Exception as e:
+        return False, f"Unexpected error creating symlink: {e}\nTarget: {link_path} -> {target_path}"
+
+
 def move_dir_contents(src: Path, dst: Path):
     ensure_dir(dst)
     for item in src.iterdir():
@@ -115,6 +145,7 @@ class App(tk.Tk):
 
         self._make_widgets()
         self._populate_defaults()
+        self._show_windows_warning()
 
     def _make_widgets(self):
         pad = 8
@@ -190,6 +221,20 @@ class App(tk.Tk):
     def _confirm(self, title: str, message: str) -> bool:
         return messagebox.askyesno(title, message)
 
+    def _show_windows_warning(self):
+        """Show Windows-specific symlink privilege warning if on Windows."""
+        if platform.system() == "Windows":
+            warning_msg = (
+                "Windows Symlink Requirements:\n\n"
+                "This application creates symbolic links, which on Windows requires either:\n"
+                "• Running as Administrator, OR\n"
+                "• Having Developer Mode enabled\n\n"
+                "To enable Developer Mode:\n"
+                "Settings > Update & Security > For developers > Developer Mode\n\n"
+                "If you encounter privilege errors, please enable Developer Mode or run as Administrator."
+            )
+            messagebox.showinfo("Windows Setup Information", warning_msg)
+
     def _run(self):
         try:
             self._do_run()
@@ -261,8 +306,12 @@ class App(tk.Tk):
                         self._append_log(f"Skipped replacing symlink: {link_path}")
                         continue
                     link_path.unlink()
-                    os.symlink(str(target_path), str(link_path))
-                    self._append_log(f"Replaced symlink: {link_path} -> {target_path}")
+                    success, message = create_symlink_safe(link_path, target_path)
+                    if success:
+                        self._append_log(f"Replaced symlink: {link_path} -> {target_path}")
+                    else:
+                        self._append_log(f"ERROR: {message}")
+                        messagebox.showerror("Symlink Error", message)
                     continue
 
             if link_path.exists():
@@ -270,8 +319,12 @@ class App(tk.Tk):
                     if dir_is_empty(link_path):
                         # Remove empty dir and link
                         link_path.rmdir()
-                        os.symlink(str(target_path), str(link_path))
-                        self._append_log(f"Linked (empty replaced): {link_path} -> {target_path}")
+                        success, message = create_symlink_safe(link_path, target_path)
+                        if success:
+                            self._append_log(f"Linked (empty replaced): {link_path} -> {target_path}")
+                        else:
+                            self._append_log(f"ERROR: {message}")
+                            messagebox.showerror("Symlink Error", message)
                     else:
                         # Offer to move contents then link
                         if not self._confirm(
@@ -287,16 +340,24 @@ class App(tk.Tk):
                         except OSError:
                             # Fallback in case hidden files remain
                             shutil.rmtree(link_path)
-                        os.symlink(str(target_path), str(link_path))
-                        self._append_log(f"Moved contents and linked: {link_path} -> {target_path}")
+                        success, message = create_symlink_safe(link_path, target_path)
+                        if success:
+                            self._append_log(f"Moved contents and linked: {link_path} -> {target_path}")
+                        else:
+                            self._append_log(f"ERROR: {message}")
+                            messagebox.showerror("Symlink Error", message)
                 else:
                     messagebox.showerror("Path exists and is not a directory", str(link_path))
                     self._append_log(f"ERROR: Path exists and is not a directory: {link_path}")
                     continue
             else:
                 # Create new symlink
-                os.symlink(str(target_path), str(link_path))
-                self._append_log(f"Linked: {link_path} -> {target_path}")
+                success, message = create_symlink_safe(link_path, target_path)
+                if success:
+                    self._append_log(f"Linked: {link_path} -> {target_path}")
+                else:
+                    self._append_log(f"ERROR: {message}")
+                    messagebox.showerror("Symlink Error", message)
 
         messagebox.showinfo("Done", "Requested symlinks processed. Check the log for details.")
 
